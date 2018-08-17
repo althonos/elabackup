@@ -82,18 +82,18 @@ class App(object):
 
         # Run the app
         try:
-            app = cls(args["<server>"], args["<apikey>"], args.get("<output>"))
+            app = cls(args["--server"], args["--apikey"])
             if args["dump"]:
-                app.dump(args.get("<output>"))
+                app.dump(args.get("--output"))
             elif args["load"]:
-                app.load(args.get("<input>"))
+                app.load(args.get("--input"))
         # catched a Ctrl+C
         except KeyboardInterrupt:
-            print("Interrupted", file=self.stream)
+            print("Interrupted", file=stream)
             return signal.SIGINT + 128  # POSIX standard
         # catched an error
         except Exception as e:
-            print("Errored: {0}".format(e), file=self.stream)
+            print("Errored: {0}".format(e), file=stream)
             if args["--traceback"]:
                 traceback.print_exc()
             return getattr(e, "errno", 1)
@@ -106,7 +106,7 @@ class App(object):
         self.apikey = apikey
         self.session = Session(self.apikey)
 
-    def _download_attachments(self, item):
+    def _dump_attachments(self, item):
         data_url = "{0}/uploads/{{long_name}}".format(self.server)
         pbar = tqdm.tqdm(item["uploads"], " (attachments)".ljust(20), leave=False, miniters=1)
         with contextlib.closing(pbar):
@@ -115,59 +115,95 @@ class App(object):
                 with contextlib.closing(self.session._get(url)) as res:
                     upload["data"] = res.read().encode("base64")
 
+    def _dump_section(self, section_url):
+        dump = []
+
+        # Load item summary
+        with contextlib.closing(self.session._get(section_url)) as res:
+            short = json.load(res)
+
+        with contextlib.closing(tqdm.tqdm(short, miniters=1)) as pbar:
+            for item_short in pbar:
+                # update title
+                title = item_short['title'].ljust(20)
+                if len(title) > 20:
+                    title = '{0}...'.format(title[:17])
+                pbar.set_description(title)
+                # get item metadata
+                url = "{0}/{1}".format(section_url, item_short['id'])
+                with contextlib.closing(self.session._get(url)) as res:
+                    item = json.load(res)
+                # download attachments
+                self._dump_attachments(item)
+                # add item
+                dump.append(item)
+
+        return dump
+
+
+
+
     def dump(self, output=None):
 
         if output is None:
             today = datetime.date.today().isoformat()
-            output or "elab-backup-{0}.json.gz".format(today)
+            output = "elab-backup-{0}.json.gz".format(today)
 
         # Pre-format some URLS
         items_url = "{0}/api/v1/items/".format(self.server)
         experiments_url = "{0}/api/v1/experiments/".format(self.server)
-        item_url = "{0}/api/v1/items/{{id}}".format(self.server)
-        experiment_url = "{0}/api/v1/experiments/{{id}}".format(self.server)
 
         # Prepare dump dictionary
-        dump = {"timestamp": int(time.time())}
+        dump = {
+            "timestamp": int(time.time()),
+            "experiments": self._dump_section(experiments_url),
+            "items": self._dump_section(items_url),
+        }
 
-        # Load item summary
-        with contextlib.closing(self.session._get(items_url)) as res:
-            items_short = json.load(res)
+        # # Load item summary
+        # with contextlib.closing(self.session._get(items_url)) as res:
+        #     items_short = json.load(res)
 
         # Load items
-        dump["items"] = items = []
-        with contextlib.closing(tqdm.tqdm(items_short, miniters=1)) as pbar:
-            for item_short in pbar:
-                # update title
-                pbar.set_description(item_short["title"].ljust(20))
-                # get item metadata
-                url = item_url.format(**item_short)
-                with contextlib.closing(self.session._get(url)) as res:
-                    item = json.load(res)
-                # download attachments
-                self._download_attachments(item)
-                # add item
-                items.append(item)
-
-        # Load experiments summary
-        with contextlib.closing(self.session._get(experiments_url)) as res:
-            exps_short = json.load(res)
-
-        # Load experiments
-        dump["experiments"] = experiments = []
-        with contextlib.closing(tqdm.tqdm(exps_short, miniters=1)) as pbar:
-            for experiment_short in pbar:
-                # update title
-                pbar.set_description(experiment_short["title"].ljust(20))
-                # get experiment metadata
-                url = experiment_url.format(**experiment_short)
-                with contextlib.closing(self.session._get(url)) as res:
-                    experiment = json.load(res)
-                # download attachments
-                self._download_attachments(experiment)
-                # add experiment
-                experiments.append(experiment)
+        # dump["items"] = items = []
+        # with contextlib.closing(tqdm.tqdm(items_short, miniters=1)) as pbar:
+        #     for item_short in pbar:
+        #         # update title
+        #         title = item_short['title'].ljust(20)
+        #         if len(title) > 20:
+        #             title = '{}...'.format(title[:17])
+        #         pbar.set_description(title)
+        #         # get item metadata
+        #         url = item_url.format(**item_short)
+        #         with contextlib.closing(self.session._get(url)) as res:
+        #             item = json.load(res)
+        #         # download attachments
+        #         self._download_attachments(item)
+        #         # add item
+        #         items.append(item)
+        #
+        # # Load experiments summary
+        # with contextlib.closing(self.session._get(experiments_url)) as res:
+        #     exps_short = json.load(res)
+        #
+        # # Load experiments
+        # dump["experiments"] = experiments = []
+        # with contextlib.closing(tqdm.tqdm(exps_short, miniters=1)) as pbar:
+        #     for experiment_short in pbar:
+        #         # update title
+        #         pbar.set_description(experiment_short["title"].ljust(20))
+        #         # get experiment metadata
+        #         url = experiment_url.format(**experiment_short)
+        #         with contextlib.closing(self.session._get(url)) as res:
+        #             experiment = json.load(res)
+        #         # download attachments
+        #         self._download_attachments(experiment)
+        #         # add experiment
+        #         experiments.append(experiment)
 
         # Write the dump
         with contextlib.closing(gzip.open(output, "w")) as dst:
             json.dump(dump, dst)
+
+
+        return 0
